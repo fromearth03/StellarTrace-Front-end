@@ -7,6 +7,30 @@ import BlackHole3D from './BlackHole3D';
 import { useAutocomplete } from '../utils/useAutocomplete';
 import { apiFetch } from '../config/api';
 
+const OPENROUTER_PROXY_URL = import.meta.env.VITE_OPENROUTER_PROXY_URL || '/api/openrouter';
+
+async function parseProxyResponse(response) {
+  const raw = await response.text();
+  const contentType = response.headers.get('content-type') || 'unknown';
+
+  if (!raw) {
+    if (!response.ok) {
+      throw new Error(`AI proxy returned empty response (status ${response.status}).`);
+    }
+    return {};
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const preview = raw.slice(0, 120).replace(/\s+/g, ' ').trim();
+    throw new Error(
+      `AI proxy returned non-JSON (status ${response.status}, content-type ${contentType}). ` +
+      `If running local Vite, set OPENROUTER_API_KEY in .env and restart. Response preview: ${preview}`
+    );
+  }
+}
+
 const OrbitalView = ({ query, onBack, selectedArticle, onArticleClick, onCloseArticle, onSearch }) => {
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -55,7 +79,6 @@ const OrbitalView = ({ query, onBack, selectedArticle, onArticleClick, onCloseAr
     setArticleAiResponse('');
     setArticleAiExpanded(true);
     try {
-      if (typeof window.puter === 'undefined') throw new Error('Puter.js not loaded');
       const prompt = `You are a scientific research assistant. Analyze the following academic paper and provide a structured, insightful summary.
 
 Title: ${selectedArticle.title}
@@ -74,11 +97,16 @@ Please provide:
 5. **Limitations & Future Work** – Any noted limitations or suggested future directions?
 
 Keep the response concise, academic in tone, and easy to understand for an informed reader.`;
-      const stream = await window.puter.ai.chat(prompt, { model: 'gemini-2.5-flash', stream: true });
-      let full = '';
-      for await (const part of stream) {
-        if (part?.text) { full += part.text; setArticleAiResponse(full); }
+      const response = await fetch(OPENROUTER_PROXY_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, model: 'google/gemini-2.5-flash' })
+      });
+      const data = await parseProxyResponse(response);
+      if (!response.ok) {
+        throw new Error(data?.error || 'AI request failed (empty or invalid response from proxy)');
       }
+      setArticleAiResponse(data?.content || '');
     } catch (err) {
       setArticleAiError(err.message);
     } finally {
@@ -142,27 +170,17 @@ Keep the response concise, academic in tone, and easy to understand for an infor
       setAiResponse('');
 
       try {
-        // Check if puter is available
-        if (typeof window.puter === 'undefined') {
-          throw new Error('Puter.js not loaded');
+        const prompt = `Provide a comprehensive scientific summary about: ${query}. Focus on key concepts, recent developments, and important research areas. Keep it informative and academic.`;
+        const response = await fetch(OPENROUTER_PROXY_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt, model: 'google/gemini-2.5-flash' })
+        });
+        const data = await parseProxyResponse(response);
+        if (!response.ok) {
+          throw new Error(data?.error || 'AI request failed (empty or invalid response from proxy)');
         }
-
-        // Use Puter.js for free unlimited Gemini API access with streaming
-        const stream = await window.puter.ai.chat(
-          `Provide a comprehensive scientific summary about: ${query}. Focus on key concepts, recent developments, and important research areas. Keep it informative and academic.`,
-          {
-            model: 'gemini-2.5-flash',
-            stream: true
-          }
-        );
-
-        let fullResponse = '';
-        for await (const part of stream) {
-          if (part?.text) {
-            fullResponse += part.text;
-            setAiResponse(fullResponse);
-          }
-        }
+        setAiResponse(data?.content || '');
       } catch (err) {
         setAiError(err.message);
         console.error('AI error:', err);
