@@ -8,6 +8,145 @@ import { useAutocomplete } from '../utils/useAutocomplete';
 import { apiFetch } from '../config/api';
 
 const OPENROUTER_PROXY_URL = import.meta.env.VITE_OPENROUTER_PROXY_URL || '/api/openrouter';
+const QUERY_PROMPT_CHAR_LIMIT = 2000;
+const ARTICLE_ABSTRACT_CHAR_LIMIT = 2500;
+const ARTICLE_PROMPT_CHAR_LIMIT = 5000;
+
+function truncateText(input, maxChars) {
+  if (!input || typeof input !== 'string') return '';
+  if (input.length <= maxChars) return input;
+  return `${input.slice(0, maxChars)}...`;
+}
+
+function truncateAuthors(authors, maxAuthors = 6) {
+  if (!authors) return '';
+  if (Array.isArray(authors)) {
+    return authors.slice(0, maxAuthors).join(', ');
+  }
+  if (typeof authors === 'string') {
+    return authors.split(',').map((name) => name.trim()).filter(Boolean).slice(0, maxAuthors).join(', ');
+  }
+  return '';
+}
+
+function stripMarkdown(input) {
+  return input
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/`(.*?)`/g, '$1')
+    .replace(/^\s*[-*]\s+/gm, '')
+    .replace(/^\s*\d+\.\s+/gm, '')
+    .replace(/\[(.*?)\]\((.*?)\)/g, '$1')
+    .trim();
+}
+
+function renderInlineMarkdown(text) {
+  const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g);
+  return parts.map((part, index) => {
+    if (!part) return null;
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={`inline-${index}`}>{part.slice(2, -2)}</strong>;
+    }
+    if (part.startsWith('*') && part.endsWith('*')) {
+      return <em key={`inline-${index}`}>{part.slice(1, -1)}</em>;
+    }
+    if (part.startsWith('`') && part.endsWith('`')) {
+      return (
+        <code key={`inline-${index}`} className="px-1 py-0.5 rounded bg-white/10 text-blue-200 font-mono text-[10px] sm:text-xs">
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+    return <span key={`inline-${index}`}>{part}</span>;
+  });
+}
+
+function renderMarkdownContent(markdown) {
+  const lines = (markdown || '').split('\n');
+  const blocks = [];
+  let listType = null;
+  let listItems = [];
+
+  const flushList = (keyBase) => {
+    if (!listType || listItems.length === 0) return;
+    if (listType === 'ul') {
+      blocks.push(
+        <ul key={`${keyBase}-ul`} className="list-disc pl-5 space-y-1 break-words">
+          {listItems.map((item, idx) => (
+            <li key={`${keyBase}-uli-${idx}`}>{renderInlineMarkdown(item)}</li>
+          ))}
+        </ul>
+      );
+    } else {
+      blocks.push(
+        <ol key={`${keyBase}-ol`} className="list-decimal pl-5 space-y-1 break-words">
+          {listItems.map((item, idx) => (
+            <li key={`${keyBase}-oli-${idx}`}>{renderInlineMarkdown(item)}</li>
+          ))}
+        </ol>
+      );
+    }
+    listType = null;
+    listItems = [];
+  };
+
+  lines.forEach((line, index) => {
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      flushList(`list-${index}`);
+      blocks.push(<div key={`sp-${index}`} className="h-2" />);
+      return;
+    }
+
+    const headingMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
+    if (headingMatch) {
+      flushList(`list-${index}`);
+      const level = headingMatch[1].length;
+      const text = headingMatch[2];
+      const headingClass = level <= 2
+        ? 'text-white font-semibold text-sm sm:text-base mt-2'
+        : 'text-gray-100 font-semibold text-xs sm:text-sm mt-2';
+      blocks.push(
+        <div key={`h-${index}`} className={headingClass}>
+          {renderInlineMarkdown(text)}
+        </div>
+      );
+      return;
+    }
+
+    const ulMatch = trimmed.match(/^[-*]\s+(.*)$/);
+    if (ulMatch) {
+      if (listType !== 'ul') {
+        flushList(`list-switch-${index}`);
+        listType = 'ul';
+      }
+      listItems.push(ulMatch[1]);
+      return;
+    }
+
+    const olMatch = trimmed.match(/^\d+\.\s+(.*)$/);
+    if (olMatch) {
+      if (listType !== 'ol') {
+        flushList(`list-switch-${index}`);
+        listType = 'ol';
+      }
+      listItems.push(olMatch[1]);
+      return;
+    }
+
+    flushList(`list-${index}`);
+    blocks.push(
+      <p key={`p-${index}`} className="text-gray-300 leading-relaxed break-words">
+        {renderInlineMarkdown(trimmed)}
+      </p>
+    );
+  });
+
+  flushList('final');
+  return <div className="space-y-1">{blocks}</div>;
+}
 
 async function parseProxyResponse(response) {
   const raw = await response.text();
@@ -79,15 +218,21 @@ const OrbitalView = ({ query, onBack, selectedArticle, onArticleClick, onCloseAr
     setArticleAiResponse('');
     setArticleAiExpanded(true);
     try {
+      const safeTitle = truncateText(selectedArticle.title || 'Untitled', 300);
+      const safeAuthors = truncateAuthors(selectedArticle.authors, 6);
+      const safeJournal = truncateText(selectedArticle['journal-ref'] || '', 220);
+      const safeCategories = truncateText(selectedArticle.categories || '', 220);
+      const safeAbstract = truncateText(selectedArticle.abstract || '', ARTICLE_ABSTRACT_CHAR_LIMIT);
+
       const prompt = `You are a scientific research assistant. Analyze the following academic paper and provide a structured, insightful summary.
 
-Title: ${selectedArticle.title}
-Authors: ${selectedArticle.authors}
-${selectedArticle['journal-ref'] ? `Journal: ${selectedArticle['journal-ref']}` : ''}
-${selectedArticle.categories ? `Categories: ${selectedArticle.categories}` : ''}
+    Title: ${safeTitle}
+    Authors: ${safeAuthors}
+    ${safeJournal ? `Journal: ${safeJournal}` : ''}
+    ${safeCategories ? `Categories: ${safeCategories}` : ''}
 
 Abstract:
-${selectedArticle.abstract}
+    ${safeAbstract}
 
 Please provide:
 1. **Key Contribution** – What is the main novel contribution of this paper?
@@ -97,10 +242,11 @@ Please provide:
 5. **Limitations & Future Work** – Any noted limitations or suggested future directions?
 
 Keep the response concise, academic in tone, and easy to understand for an informed reader.`;
+      const limitedPrompt = truncateText(prompt, ARTICLE_PROMPT_CHAR_LIMIT);
       const response = await fetch(OPENROUTER_PROXY_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, model: 'google/gemini-2.5-flash' })
+        body: JSON.stringify({ prompt: limitedPrompt, model: 'google/gemini-2.5-flash' })
       });
       const data = await parseProxyResponse(response);
       if (!response.ok) {
@@ -170,11 +316,13 @@ Keep the response concise, academic in tone, and easy to understand for an infor
       setAiResponse('');
 
       try {
-        const prompt = `Provide a comprehensive scientific summary about: ${query}. Focus on key concepts, recent developments, and important research areas. Keep it informative and academic.`;
+        const safeQuery = truncateText(query, 240);
+        const prompt = `Provide a comprehensive scientific summary about: ${safeQuery}. Focus on key concepts, recent developments, and important research areas. Keep it informative and academic.`;
+        const limitedPrompt = truncateText(prompt, QUERY_PROMPT_CHAR_LIMIT);
         const response = await fetch(OPENROUTER_PROXY_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt, model: 'google/gemini-2.5-flash' })
+          body: JSON.stringify({ prompt: limitedPrompt, model: 'google/gemini-2.5-flash' })
         });
         const data = await parseProxyResponse(response);
         if (!response.ok) {
@@ -215,11 +363,11 @@ Keep the response concise, academic in tone, and easy to understand for an infor
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.4 }}
-      className="relative w-full h-full flex flex-col lg:flex-row overflow-hidden"
+      className="relative w-full h-full flex flex-col lg:flex-row overflow-hidden orbital-layout"
     >
       {/* Left Panel - 3D Planet */}
       <motion.div
-        className="relative w-full lg:w-2/5 h-44 lg:h-full flex flex-col"
+        className="relative w-full lg:w-2/5 h-44 lg:h-full flex flex-col orbital-left-panel"
         initial={{ x: -100, opacity: 0 }}
         animate={{ x: 0, opacity: 1 }}
         transition={{ duration: 0.4, delay: 0.1 }}
@@ -255,7 +403,7 @@ Keep the response concise, academic in tone, and easy to understand for an infor
 
       {/* Right Panel - Results or Article */}
       <motion.div
-        className="relative w-full lg:w-3/5 h-full flex flex-col p-4 sm:p-6 lg:p-8"
+        className="relative w-full lg:w-3/5 h-full flex flex-col p-5 sm:p-7 lg:p-10 orbital-right-panel"
         initial={{ x: 100, opacity: 0 }}
         animate={{ x: 0, opacity: 1 }}
         transition={{ duration: 0.4, delay: 0.15 }}
@@ -263,7 +411,7 @@ Keep the response concise, academic in tone, and easy to understand for an infor
         {selectedArticle ? (
           // Article Detail View
           <>
-            <div className="mb-4 sm:mb-6">
+            <div className="mb-4 sm:mb-6 results-consistent-gap">
               <button
                 onClick={onCloseArticle}
                 className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors font-mono text-[10px] sm:text-xs tracking-wider"
@@ -273,7 +421,7 @@ Keep the response concise, academic in tone, and easy to understand for an infor
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto pr-2 sm:pr-4 custom-scrollbar">
+            <div className="flex-1 overflow-y-auto pr-2 sm:pr-4 px-2 sm:px-3 custom-scrollbar orbital-scroll">
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -282,11 +430,11 @@ Keep the response concise, academic in tone, and easy to understand for an infor
               >
                 <div className="relative">
                   <div className="absolute inset-0 bg-overlay-dark border border-white/20" />
-                  <div className="relative p-4 sm:p-6">
+                  <div className="relative p-5 sm:p-7">
                     <div className="font-mono text-[10px] text-gray-500 tracking-widest mb-2 sm:mb-3">
                       {selectedArticle.id}
                     </div>
-                    <h1 className="text-lg sm:text-xl md:text-2xl font-light text-white leading-relaxed mb-3 sm:mb-4">
+                    <h1 className="text-lg sm:text-xl md:text-2xl font-light text-white leading-relaxed mb-3 sm:mb-4 break-words">
                       {selectedArticle.title}
                     </h1>
                     <div className="text-xs sm:text-sm text-gray-400 mb-2">
@@ -311,9 +459,9 @@ Keep the response concise, academic in tone, and easy to understand for an infor
 
                 <div className="relative">
                   <div className="absolute inset-0 bg-overlay-dark border border-white/20" />
-                  <div className="relative p-4 sm:p-6">
+                  <div className="relative p-5 sm:p-7">
                     <h2 className="text-xs sm:text-sm font-mono text-gray-400 tracking-widest mb-3 sm:mb-4">ABSTRACT</h2>
-                    <p className="text-sm sm:text-base text-gray-300 leading-relaxed whitespace-pre-wrap">
+                    <p className="text-sm sm:text-base text-gray-300 leading-relaxed whitespace-pre-wrap break-words">
                       {selectedArticle.abstract}
                     </p>
                   </div>
@@ -322,7 +470,7 @@ Keep the response concise, academic in tone, and easy to understand for an infor
                 {selectedArticle.categories && (
                   <div className="relative">
                     <div className="absolute inset-0 bg-overlay-dark border border-white/20" />
-                    <div className="relative p-4 sm:p-6">
+                    <div className="relative p-5 sm:p-7">
                       <h2 className="text-xs sm:text-sm font-mono text-gray-400 tracking-widest mb-3">CATEGORIES</h2>
                       <div className="flex flex-wrap gap-2">
                         {selectedArticle.categories.split(' ').map((cat, i) => (
@@ -347,7 +495,7 @@ Keep the response concise, academic in tone, and easy to understand for an infor
                   }}
                 >
                   <div className="absolute inset-0 bg-gradient-to-br from-violet-950/20 to-blue-950/20 backdrop-blur-sm border border-violet-400/30 group-hover:border-violet-400/50 transition-colors" />
-                  <div className="relative p-3 sm:p-4">
+                  <div className="relative p-5 sm:p-6">
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-2">
                         <Sparkles size={12} className="sm:w-3.5 sm:h-3.5 text-violet-400" />
@@ -378,11 +526,11 @@ Keep the response concise, academic in tone, and easy to understand for an infor
                     {!articleAiError && articleAiResponse && (
                       <div className="text-gray-300 text-[11px] sm:text-xs leading-relaxed">
                         {articleAiExpanded ? (
-                          <div className="whitespace-pre-wrap max-h-[400px] overflow-y-auto pr-2 custom-scrollbar mt-1">
-                            {articleAiResponse}
+                          <div className="max-h-[400px] overflow-y-auto pr-2 custom-scrollbar mt-1">
+                            {renderMarkdownContent(articleAiResponse)}
                           </div>
                         ) : (
-                          <div className="line-clamp-2 mt-1">{articleAiResponse.slice(0, 160)}...</div>
+                          <div className="line-clamp-2 mt-1">{stripMarkdown(articleAiResponse).slice(0, 160)}...</div>
                         )}
                       </div>
                     )}
@@ -405,7 +553,7 @@ Keep the response concise, academic in tone, and easy to understand for an infor
         ) : (
           // Results List
           <>
-            <div className="mb-4 sm:mb-6">
+            <div className="mb-4 sm:mb-6 results-consistent-gap">
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-3 sm:mb-4 gap-2">
                 <button
                   onClick={onBack}
@@ -422,7 +570,7 @@ Keep the response concise, academic in tone, and easy to understand for an infor
 
               <div className="relative">
                 <div className="absolute inset-0 bg-overlay-light backdrop-blur-sm border border-white/20" />
-                <form onSubmit={handleSearchSubmit} className="relative py-2 sm:py-3 px-3 sm:px-5 font-mono text-xs sm:text-sm text-gray-300 tracking-wide flex items-center gap-2 sm:gap-3">
+                <form onSubmit={handleSearchSubmit} className="relative py-3 sm:py-4 px-4 sm:px-6 font-mono text-xs sm:text-sm text-gray-300 tracking-wide flex items-center gap-2 sm:gap-3 min-w-0">
                   <span className="text-gray-400 hidden sm:inline">QUERY:</span>
                   {isEditing ? (
                     <input
@@ -436,7 +584,7 @@ Keep the response concise, academic in tone, and easy to understand for an infor
                     />
                   ) : (
                     <span
-                      className="flex-1 text-white cursor-text hover:text-blue-300 transition-colors"
+                      className="flex-1 min-w-0 text-white cursor-text hover:text-blue-300 transition-colors truncate"
                       onClick={() => {
                         setIsEditing(true);
                         setShowSuggestions(true);
@@ -622,13 +770,13 @@ Keep the response concise, academic in tone, and easy to understand for an infor
             </div>
 
             {/* AI Summary Section */}
-            <div className="mb-4 sm:mb-6">
+            <div className="mb-4 sm:mb-6 results-consistent-gap">
               <div
                 className="relative cursor-pointer group"
                 onClick={() => setAiExpanded(!aiExpanded)}
               >
                 <div className="absolute inset-0 bg-gradient-to-br from-blue-950/20 to-purple-950/20 backdrop-blur-sm border border-blue-400/30 group-hover:border-blue-400/50 transition-colors" />
-                <div className="relative p-3 sm:p-4">
+                <div className="relative p-5 sm:p-6">
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
                       <Sparkles size={12} className="sm:w-3.5 sm:h-3.5 text-blue-400" />
@@ -653,12 +801,12 @@ Keep the response concise, academic in tone, and easy to understand for an infor
                   {!aiError && aiResponse && (
                     <div className="text-gray-300 text-[11px] sm:text-xs leading-relaxed">
                       {aiExpanded ? (
-                        <div className="whitespace-pre-wrap max-h-[300px] sm:max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
-                          {aiResponse}
+                        <div className="max-h-[300px] sm:max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
+                          {renderMarkdownContent(aiResponse)}
                         </div>
                       ) : (
                         <div className="line-clamp-2">
-                          {aiResponse.slice(0, 150)}...
+                          {stripMarkdown(aiResponse).slice(0, 150)}...
                         </div>
                       )}
                     </div>
@@ -706,7 +854,7 @@ Keep the response concise, academic in tone, and easy to understand for an infor
             {!loading && !error && results.length > 0 && (
               <>
                 {/* Result Limit Slider */}
-                <div className="mb-3 sm:mb-4">
+                <div className="mb-3 sm:mb-4 results-consistent-gap">
                   <div className="flex items-center justify-between mb-1.5">
                     <span className="font-mono text-[10px] sm:text-xs text-gray-400 tracking-widest">LIMIT SEARCH RESULTS</span>
                     <span className="font-mono text-[10px] sm:text-xs text-blue-400 tabular-nums">{Math.min(resultLimit, results.length)} / {results.length}</span>
@@ -739,7 +887,7 @@ Keep the response concise, academic in tone, and easy to understand for an infor
                   </div>
                 </div>
 
-                <div className="flex-1 overflow-y-auto pr-2 sm:pr-4 space-y-3 sm:space-y-4 custom-scrollbar">
+                <div className="flex-1 overflow-y-auto space-y-3 sm:space-y-4 custom-scrollbar orbital-scroll results-consistent-gap">
                   {results.slice(0, resultLimit).map((result, index) => (
                     <motion.div
                       key={result.id}
@@ -751,7 +899,7 @@ Keep the response concise, academic in tone, and easy to understand for an infor
                     >
                       <div className="absolute inset-0 bg-overlay-dark border border-white/10 group-hover:border-white/30 transition-colors" />
 
-                      <div className="relative p-3 sm:p-5">
+                      <div className="relative p-5 sm:p-7">
                         <div className="flex flex-col sm:flex-row sm:items-start justify-between mb-2 sm:mb-3 gap-1 sm:gap-0">
                           <div className="font-mono text-[9px] sm:text-[10px] text-gray-500 tracking-widest">
                             {result.id}
@@ -815,6 +963,39 @@ Keep the response concise, academic in tone, and easy to understand for an infor
         }
         .custom-scrollbar::-webkit-scrollbar-thumb:hover {
           background: rgba(255, 255, 255, 0.3);
+        }
+        .results-consistent-gap {
+          padding-left: 0;
+          padding-right: 0;
+        }
+        .orbital-right-panel {
+          padding-left: clamp(0.55rem, 1.3vw, 1.1rem);
+          padding-right: clamp(0.55rem, 1.3vw, 1.1rem);
+        }
+        .orbital-scroll {
+          padding-left: 0;
+          padding-right: 0;
+        }
+        @media (max-width: 768px) {
+          .orbital-layout {
+            min-height: 100dvh;
+            overflow-y: auto;
+            overflow-x: hidden;
+          }
+          .orbital-right-panel {
+            height: auto;
+            padding-left: 0.5rem;
+            padding-right: 0.5rem;
+          }
+          .results-consistent-gap {
+            padding-left: 0;
+            padding-right: 0;
+          }
+          .orbital-scroll {
+            padding-left: 0;
+            padding-right: 0;
+            padding-bottom: 1.5rem;
+          }
         }
       `}</style>
     </motion.div>

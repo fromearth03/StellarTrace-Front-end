@@ -29,3 +29,10 @@
   scrollbar-color: #818cf8 #f1f5f9;
 }
 
+@media (max-width: 768px) {
+  .app-shell {
+    min-height: 100dvh;
+    height: auto;
+  }
+}
+

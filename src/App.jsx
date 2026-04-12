@@ -32,7 +32,7 @@ function App() {
   };
 
   return (
-    <div className="w-full h-full bg-black relative">
+    <div className="w-full h-full bg-black relative overflow-x-hidden app-shell">
       <Starfield />
 
       <AnimatePresence mode="wait">

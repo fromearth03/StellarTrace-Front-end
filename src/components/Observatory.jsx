@@ -84,7 +84,7 @@ const Observatory = ({ onSearch, onAddDocument }) => {
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.4 }}
-      className="relative w-full h-full flex items-center justify-center overflow-hidden"
+      className="relative w-full min-h-[100dvh] lg:h-full flex items-center justify-center overflow-y-auto lg:overflow-hidden overflow-x-hidden"
     >
       {/* 3D Milky Way Galaxy Background */}
       <MilkyWay3D />
