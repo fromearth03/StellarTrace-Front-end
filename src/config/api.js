@@ -1,22 +1,18 @@
 // =============================================================
 // API Configuration
 // =============================================================
-// Update the NGROK_URL below whenever you get a new ngrok link.
-// The app auto-detects whether to use ngrok or localhost:
-//   - If accessed from another device (via ngrok), uses NGROK_URL
-//   - If accessed locally (localhost/127.0.0.1), uses LOCAL_URL
+// Update the REMOTE_URL below whenever your deployed backend URL changes.
+// The app currently uses REMOTE_URL for all environments.
 // =============================================================
 
-const NGROK_URL = "https://9bc1-111-68-97-202.ngrok-free.app";
+const REMOTE_URL = "https://stellartrace.jarviscore.me";
 const LOCAL_URL = "http://localhost:8080";
 
 /**
- * Auto-detect: if the frontend is being accessed via ngrok or
- * any non-localhost domain, the backend must also be via ngrok.
- * Only use localhost when the page itself is on localhost.
+ * Uses deployed backend URL for all requests.
  */
 function detectApiBase() {
-    return NGROK_URL;
+    return REMOTE_URL;
 }
 
 /**
@@ -52,4 +48,4 @@ export async function apiFetch(path, options = {}) {
     return fetch(url, { ...options, headers });
 }
 
-export { NGROK_URL, LOCAL_URL };
+export { REMOTE_URL, LOCAL_URL };
