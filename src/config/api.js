@@ -7,7 +7,7 @@
 //   - If accessed locally (localhost/127.0.0.1), uses LOCAL_URL
 // =============================================================
 
-const NGROK_URL = "https://296a-111-119-167-128.ngrok-free.app";
+const NGROK_URL = "https://9bc1-111-68-97-202.ngrok-free.app";
 const LOCAL_URL = "http://localhost:8080";
 
 /**
@@ -16,9 +16,7 @@ const LOCAL_URL = "http://localhost:8080";
  * Only use localhost when the page itself is on localhost.
  */
 function detectApiBase() {
-    const host = window.location.hostname;
-    const isLocal = host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0";
-    return isLocal ? LOCAL_URL : NGROK_URL;
+    return NGROK_URL;
 }
 
 /**
