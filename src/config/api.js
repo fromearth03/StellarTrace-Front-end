@@ -5,7 +5,7 @@
 // The app currently uses REMOTE_URL for all environments.
 // =============================================================
 
-const REMOTE_URL = "https://stellartrace.jarviscore.me";
+const REMOTE_URL = "https://backend.stellar-trace.tech";
 const LOCAL_URL = "http://localhost:8080";
 
 /**
